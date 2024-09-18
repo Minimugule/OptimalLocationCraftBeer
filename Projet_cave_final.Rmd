@@ -1,0 +1,561 @@
+---
+title: "Projet_caviste"
+author: "Samuel"
+date: "2024-03-21"
+output: html_document
+---
+
+# 1 Identifier et collecter les données
+
+Ce rapport se concentre sur l'analyse et la proposition d'implantation d'une cave à bière dans les environs de Rennes et des alentours. En utilisant une approche de statistique spatiale, nous visons à identifier une localisation optimale pour cette cave à bière et à sélectionner une enseigne pertinente. À travers une analyse méthodique, nous intégrerons des données démographiques, économiques et de consommation pour guider nos recommandations.
+
+## 1.1 Identification
+
+Etant de grand fans de boisons alcoolisées, nous avons décidé de nous pencher sur le secteur des caves à bière. Nous avons donc décidé de nous concentrer sur les établissements de vente de bière "artisanales" dans la région de Rennes et ces alentours. 
+
+Pour trouver nos données nous avons utilsés la base de données du gouvernement sirene et choisie d'étudier les établissements de type "Caviste". Nous avons également utilisé des données géographiques sur les IRIS de France pour obtenir des informations sur la population et les revenus des ménages. 
+
+```{r setup, include=FALSE, echo = F}
+#install.packages("pacman",repos = "http://cran.us.r-project.org")
+pacman::p_load(dplyr, ggplot2, viridis, sf, readr, readxl, tmap, tidyverse, tidygeocoder, opentripplanner, spatstat, stars, spdep)
+
+
+#etablissement <- read_csv("C:/Users/minim/OneDrive/Bureau/USB/Master/Semestre 2/Magistère/Projet/data/etablissements.csv")
+#sirene_rennes <- etablissement |> select("siren", "dateCreationEtablissement", "numeroVoieEtablissement","typeVoieEtablissement", "libelleVoieEtablissement", "codePostalEtablissement", "codePostalEtablissement", "enseigne1Etablissement")
+
+# Fusion des colonnes pour créeer une colonne adresse
+# Remplacer les NA dans les colonnes numeroVoieEtablissement, typeVoieEtablissement par des " "
+#sirene_rennes <- sirene_rennes |> mutate(numeroVoieEtablissement = ifelse(is.na(numeroVoieEtablissement), "", numeroVoieEtablissement))
+#sirene_rennes <- sirene_rennes |> mutate(numeroVoieEtablissement = ifelse(is.na(typeVoieEtablissement), "", typeVoieEtablissement))
+
+#sirene_rennes <- sirene_rennes |> mutate(adresse = paste(numeroVoieEtablissement, typeVoieEtablissement, libelleVoieEtablissement, codePostalEtablissement))
+
+# Suppression des colonnes inutiles
+#sirene_rennes <- sirene_rennes |> select(-numeroVoieEtablissement, -typeVoieEtablissement, -libelleVoieEtablissement, -codePostalEtablissement)
+
+# Géolocalisation des adresses
+# coord <- sirene_rennes |> tidygeocoder::geocode(adresse)
+#write.csv(coord,"data/donnees.csv")
+```
+
+
+```{r donnees, echo = F}
+sirene_rennes <- read.csv("data/donnees.csv", header = T, sep = ",")
+df <- sirene_rennes
+
+```
+
+
+# 2 Cartographier les données
+
+## 2.1 Importation des données dans R
+
+Pour l'étude cartographique de nos données nous avons décider de classer les caves à bière selon leur date de création. Pour cela nous avons créée une nouvelle colonne contenant trois modalités (ancien, moyen, récent) en fonction de la date de création de l'établissement (choix arbitraire). Puis nous nous sommes intéressés au territoire de Rennes et de celui qui l'entour donc nous avons sélectionné les communes les plus proches de notre ville.
+
+```{r,results='hide'}
+options(scipen=999)
+```
+
+
+```{r}
+# Chargement des données
+iris_shp<-st_read("data/georef-france-iris-millesime.shp")
+iris_shp$com_name<-gsub(pattern="\\['|\\']", replacement='',iris_shp$com_name) #remove the [' ']
+iris_shp$iris_code<-gsub(pattern="\\['|\\']", replacement='',iris_shp$iris_code) #remove the [' ']
+iris_shp$iris_name<-gsub(pattern="\\['|\\']", replacement='',iris_shp$iris_name) #remove the [' ']
+iris_data <- read_excel("data/iris_35.xlsx")
+```
+
+
+```{r trie_base_sirene_rennes}
+# Filtrer les données selon les valeurs de com_name
+iris_rennes <- iris_shp %>%
+  filter(com_name %in% c("Rennes", "Cesson-Sévigné", "Saint-Grégoire", "Saint-Jacques-de-la-Lande", "Chantepie", "Vezin-le-Coquet", "Montgermont", "Pacé", "Betton", "Thorigné-Fouillard"))
+
+
+# Modification sur le jeu de données
+sirene_rennes <- sirene_rennes %>%
+  filter(X != 59 & X != 24 & X!= 33 & X != 36)
+
+# Passage sous forme GEOMETRY
+sirene_rennes <- st_as_sf(sirene_rennes, coords = c("long", "lat"), crs = 4326)
+
+# Creation colonne date de création(récent, moyen, ancien)
+library(dplyr)
+
+sirene_rennes <- sirene_rennes %>%
+  mutate(dateCreationEtablissement = as.Date(dateCreationEtablissement, format = "%Y-%m-%d")) %>%
+  mutate(Date.categ = case_when(
+    year(dateCreationEtablissement) > 2018 ~ "recent",
+    year(dateCreationEtablissement) > 2005 ~ "moyen",
+    TRUE ~ "ancien"
+  ))
+
+# Nom des enseignes, remplacer les NA par indépendants
+sirene_rennes$enseigne1Etablissement[is.na(sirene_rennes$enseigne1Etablissement)] <- "Indépendant"
+
+```
+
+
+Pour que l'analyse de nos données soit pertinante, nous avons fusionné les variables de la base de données iris, et les avons rassemblées dans différentes colonnes. Nous avons également renommé les colonnes pour une meilleure compréhension.
+
+```{r}
+iris_data$nb_residence_princ<-iris_data$Res_princ_30_moins_40_m2+iris_data$Res_princ_40_moins_60_m2+iris_data$Res_princ_60_moins_80_m2+iris_data$Res_princ_80_moins_100_m2+iris_data$Res_princ_100_moins_120_m2
+
+colnames(iris_rennes)[20]<-"CODE_IRIS"
+iris_rennes<-merge(iris_rennes,iris_data[,c("CODE_IRIS","1er_quartile_euro","3e_quartile_euro","nb_residence_princ", "Pop_15-24_ans","Pop_25-54_ans","Pop_55-64_ans", "Pop_65-79_ans", "Pop_15_ansplus")],by="CODE_IRIS")
+
+
+# Renommer les colonnes avec la partie d'âge spécifiée
+iris_rennes <- iris_rennes %>%
+  rename(
+    "premier_quartile_revenu" = "1er_quartile_euro",
+    "troisieme_quartile_revenu" = "3e_quartile_euro",
+    nb_residence_principale = "nb_residence_princ",
+    "15_24" = "Pop_15-24_ans",
+    "25_54" = "Pop_25-54_ans",
+    "55_64" = "Pop_55-64_ans",
+    "65_79" = "Pop_65-79_ans",
+    "15_plus" = "Pop_15_ansplus"
+  )
+
+iris_rennes <-iris_rennes %>%mutate_at(vars("15_24", "25_54", "55_64", "65_79", "15_plus", "troisieme_quartile_revenu", "premier_quartile_revenu"),  ~ na_if(., 0))
+```
+
+
+2.2 Cartographie des données
+ 
+```{r carte_premiere}
+premier_quart <- iris_rennes
+deuxieme_quart <- iris_rennes
+troisieme_quart <- iris_rennes
+quatrieme_quart <- iris_rennes
+pop_global <- iris_rennes
+
+tmap_mode("view")
+tm_shape(premier_quart) +#m_text(text = "iris_name",size=0.8)+
+  tm_polygons("15_24", alpha=0.5, palette="Blues",
+              style="pretty", id="iris_name",
+              title="Age entre 15 et 24 ans")+
+  tm_shape(deuxieme_quart) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("25_54", alpha=0.5, palette = "Greens",
+              style="pretty", id="iris_name",
+              title="Age entre 25 et 54 ans")+
+  tm_shape(troisieme_quart) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("55_64", alpha=0.5, palette = "Oranges",
+              style="pretty", id="iris_name",
+              title="Age entre 55 et 64 anss")+
+  tm_shape(quatrieme_quart) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("65_79", alpha=0.5, palette = "Purples",
+              style="pretty", id="iris_name",
+              title="Age entre 65 et 79 ans")+
+  tm_shape(pop_global) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("15_plus", alpha=0.5, palette = "Greys",
+              style="pretty", id="iris_name",
+              title="Age entre 65 et 79 ans")+
+  
+  tm_shape(sirene_rennes) + 
+  tm_dots("Date.categ",legend.show = TRUE,title="Date de création",size=0.1,
+          popup.vars = "enseigne1Etablissement") + tm_layout(legend.outside = TRUE)
+```
+ 
+On peut voir sur la carte ci-dessus la répartition de la population par tranche d'âge dans les différents quartiers de Rennes et ses alentours.
+On ne remarque pas spécialement de shéma pour la population, le nombre d'actif ou le nombre de résidence, dans les quartiers de Rennes et ces alentours (contrairement à l'Ile-de-France). Mise à part que les quartiers qui on la plus forte population sont aussi ceux qui ont le plus d'actifs et de résidence, ce qui semle tout à fait logique.En revanche, pour les revenues on constate que ce sont les habitants en ville-dentre et en couronne périurbaine qui ont les revenues les plus élevés. Mais on a du mal à voir une corrélation entre les revenues et les autres variables.
+
+
+
+```{r} 
+premier_quartile <- iris_rennes
+troisieme_quartile <- iris_rennes
+
+tmap_mode("view")
+tm_shape(premier_quartile) + #m_text(text = "iris_name",size=0.8)+
+  tm_polygons("premier_quartile_revenu", alpha=0.5, palette="Blues",
+              style="pretty", id="iris_name",
+              title="Premier quartile de revenue")+
+  
+  tm_shape(troisieme_quartile) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("troisieme_quartile_revenu", alpha=0.5, palette = "Greens",
+              style="pretty", id="iris_name",
+              title="Troisième quartile de revenue")+
+  
+  tm_shape(sirene_rennes) + 
+  tm_dots("Date.categ",legend.show = TRUE,title="Date de création",size=0.1,
+          popup.vars = "enseigne1Etablissement") + tm_layout(legend.outside = TRUE)
+```
+
+On peut voir sur la carte ci-dessus la répartition des revenus par quartier de Rennes et ses alentours. On peut voir que les quartiers les plus riches sont situés en centre-ville et en couronne périurbaine. On peut constater que les quartiers les plus pauvres sont situés en banlieue. 
+
+On peut voir que les caves à bière sont principalement situées en centre-ville, ce qui est logique car c'est là où il y a le plus de passage. On peut également voir que les caves à bière sont situées dans les quartiers les plus riches, ce qui est également logique car c'est là où les clients ont le plus de pouvoir d'achat.
+
+Si on analyse l'implantation des caves à bière en fonction de leur date d'implantation, on constate que les caves qui ont été implanté récemment se situent majoritairement dans le centre ville, tandis que les plus anciennes sont plus éparpillées dans l'espace.
+
+On constate aussi que les caves à bières sont situées au centre et pour le reste, elles ne sont pas forcément situées là où la population est la plus importante. On en déduit que ces dernières se font vites rares une fois sortie du centre-ville de Rennes et donc qu'elles doivent avoir un rayon d'influence important.
+
+
+*Sauvegarde des shapefiles et données*
+
+ 
+```{r, results='hide'}
+#st_write(iris_rennes,"data/iris_rennes.gpkg")
+#st_write(sirene_rennes,"data/sirene_rennes.gpkg")
+```
+
+
+## 2.3 Analyse de la densité et de processus ponctuel
+
+*On doit transformer les données géographiques en "planar", c'est à dire les mettre en mètre et non en dégré $\Rightarrow$ projection Lambert 93.*
+
+```{r}
+planar_sf<-st_transform(iris_rennes, 2154)
+planar_sirene<-st_transform(sirene_rennes, 2154)
+ppp_points <- as.ppp(st_coordinates(planar_sirene),as.owin(planar_sf))
+intensity(ppp_points) # Expected (average) density (population parameter)
+ds <- density(ppp_points) #sample version
+plot(ds, main='Densité des points de vente de bières')
+```
+
+En regardant la densité des points de ventes, on constate que la densité est plus forte en centre-ville, ce qui confirme nos hypothèses ci-dessus. On peut aussi voir que la densité est plus faible dans la couronne qui entoure la ville de Rennes, ce n'est pas étonnant non plus. En effet même si c'est dans ces environs que la ville s'est le plus développée ces dernières années, c'est aussi là où il y a le moins d'habitants. 
+
+
+*Calcul des fonctions K et L, avec enveloppe*
+
+```{r}
+Kpp<-envelope(ppp_points, Kest,correction="isotropic")
+Lpp<-envelope(ppp_points, Lest,correction="isotropic")
+
+par(mfrow=c(1, 2))
+plot(Kpp, main="Points de vente", xlab = "r (mètres)")
+plot(Lpp, main="Points de vente", xlab = "r (mètres)")
+```
+
+Le graphique $K(r)$ montre la fonction d'enveloppe isotropique des caves à bières à Rennes et ses environs, c'est-à-dire la distance maximale à laquelle une cave est susceptible d'être trouvée proche d'une autre cave à bière. La fonction d'enveloppe est croissante, ce qui signifie que la probabilité de trouver une cave à bière à une distance donnée augmente avec la distance. Cela est dû à la présence du centres-ville et de zones commerçantes qui attirent du moonde et donc l'implantation de plusieurs caves à bières.
+
+La comparaison des deux graphiques montre que l'effet de bord est important dans ce cas. La fonction d'enveloppe $L(r)$ est significativement plus basse que la fonction d'enveloppe $K(r)$, ce qui signifie que la probabilité de trouver une cave à bière à une distance donnée est en réalité beaucoup plus faible que ce que suggère le premier graphique.
+
+
+On en déduit donc que les caves à bières ne sont pas distribuées de manière homogène dans l'espace, mais plutôt de manière agrégée. Les études futures sur la répartition des caves à bières à Rennes et ses environs devront tenir compte de l'effet de bord.
+
+
+*Test de distribution (empirique vs processus ponctuel de poisson)*
+
+```{r}
+KS.test <- cdf.test(ppp_points, ds)
+KS.test
+```
+
+On constate que la p-value est inférieure à 5%, on rejète l'hypothèse que la configuration de points soit issue d'un processus de Poisson homogène. Cela confirme ce que l'on avait vu avec les fonctions K et L, les points ne sont pas distribués de manière homogène dans l'espace.
+
+
+## 2.4 Modèle de poisson avec variable explicative
+
+```{r}
+raster_planar<-st_rasterize(planar_sf) #créer un raster à partir de notre objet sf
+plot(raster_planar['premier_quartile_revenu',])
+
+variable<-as.im(raster_planar['premier_quartile_revenu',]) # le raster a plusieurs variables, choisir le Q1 du revenu et changer pour le format im (image, du package spatstat)
+modele_revenu<-ppm(ppp_points~variable) #Modèle de poisson de notre processus ponctuel expliqué par le revenu
+modele_revenu
+plot(effectfun(modele_revenu, "variable", se.fit = TRUE),legend = FALSE)
+plot(predict(modele_revenu), main = "Prédictions")
+```
+On a donc $Intensité cave = exp(-14.597 - 0.0000093910\times Q1revenu)$. Ainsi, une diminution de 1 unité du premier quartile du revenu augmente l'intensité des supermarchés de 0.0000093910 unités. Cela signifie que plus le revenue est faible moins il y a de chance d'avoir une cave à bière à proximité. 
+
+On peut aussi tester si le modèle avec une variable explicative est plus performant qu'un processus de poisson totalement homogène.
+
+```{r}
+M0 <- ppm(ppp_points ~ 1)  #Null model
+unname(exp(coef(M0)))
+intensity(ppp_points) #they are the same as expected
+anova(M0, modele_revenu, test = "LRT") # Compare null to population model
+```
+
+On remarque que la p-value est supérieur à 5%, le modèle avec une variable explicative n'explique pas mieux le processus ponctuel.
+
+## Conclusion
+
+Dans cette partie, nous avons analysé la distribution des caves à bières à Rennes et ses environs. Nous avons constaté que les caves à bières ne sont pas distribuées de manière homogène dans l'espace, mais plutôt de manière agrégée. Les études futures sur la répartition des caves à bières à Rennes et ses alentours devront tenir compte de l'effet de bord. Nous avons également constaté que les caves à bières sont plus fréquentes dans le centre-ville.
+
+
+
+
+# 3 Cartographier des isodistances
+
+Une première information simple à obtenir mais très informative peut être obtenue en traçant des courbes d’isodistances autour de chaque cave. On peut ainsi indentifier les zones non-deserviés. Dans notre cas on a choisis un rayon de 500 m autour de la cave.
+
+
+```{r, results='hide'}
+sirene_rennes<-st_read("data/sirene_rennes.gpkg")
+st_crs(sirene_rennes)
+```
+
+
+```{r}
+buffer<-st_buffer(sirene_rennes, 500) #500m isodistance
+
+tmap_mode("view")
+tm_shape(iris_rennes) + #tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("15_plus", alpha=0.5,
+              style="pretty", id="iris_name",
+              title="Population plus de 15ans")+
+     tm_shape(buffer)+tm_borders("chartreuse3",lwd=3)  +
+  tm_layout(legend.outside = TRUE) +
+  tm_shape(sirene_rennes)+
+  tm_dots("Date.categ",legend.show=TRUE,title="Date de création", popup.vars="enseigne1Etablissement", id="enseigne1Etablissement", alpha=0.8, size = 0.05)
+
+
+```
+
+
+Sur cette carte, la réputation de la capitale bretonne est confirmée par une forte concentration de cercles iso-distance représentant les caves à bière dans le centre de Rennes, tandis que dans les quartiers de la ville, cette concentration diminue. Dans les villes périphériques, cette dispersion est encore plus prononcée.Cela soulève la question de savoir si la limite de mètres pour les clients potentiels est appropriée pour les villes périphériques. Il est plausible qu'elles attirent des clients de plus loin que ceux du centre de Rennes en raison de leur moins grande densité.
+
+
+## 3.1 Obtenir des isochrones
+
+
+```{r}
+ ## Mise en place du calculateur d’itinéraire
+
+# oublie pas d'installé java
+path_data <- "OTP"
+path_otp <- otp_dl_jar()  
+#otp_check_java()
+#log <- otp_build_graph(otp = path_otp,
+#         dir = path_data,memory=15000)
+log1<-otp_setup(otp = path_otp, dir = path_data)
+otpcon <- otp_connect()
+
+```
+
+
+
+
+```{r}
+# Pourquoi pas mettre ,"CAR" dans les modes de stransports pour les villes en periphérie
+
+colnames(sirene_rennes)[2]<-"siret"
+
+iso<-otp_isochrone(otpcon,fromPlace = sirene_rennes,fromID=sirene_rennes$siret,mode = c("WALK","TRANSIT"),
+            maxWalkDistance = 2000, date_time=as.POSIXct(strptime("2023-12-22 08:35", "%Y-%m-%d %H:%M")),
+            cutoffSec = c(5, 7,9,11) * 60 )
+
+
+
+# Cut offs in seconds
+iso$minutes = iso$time / 60
+
+#verification
+colnames(iso)[3]<-"siret"
+
+iso<-merge(iso,st_drop_geometry(sirene_rennes[,c(2,7)]),by="siret",all.y=TRUE)%>%unique() #pour avoir les enseignes mais on a pas d'isochrone pour deux points de vente
+```
+
+Nous partons du principe qu'une personne ne parcourra pas plus de 11 minutes à pied ou en transport pour se rendre dans une cave à bière. Nous calculons donc les distances isochrones pour la marche et les transports, avec une limite de distance de 2 km pour la marche.
+
+
+
+```{r}
+tmap_mode("view")
+tm_shape(iris_rennes) +#tm_text(text = "iris_name",size=0.8)+
+  tm_polygons("15_plus", alpha=0.5,palette="Greens",
+              style="pretty", id="iris_name",
+              title="Population plus de 15ans")+
+   tm_shape(sirene_rennes) + 
+  tm_dots("enseigne1Etablissement",legend.show=FALSE,title="Enseigne",popup.vars="enseigne1Etablissement",id="enseigne1Etablissement",alpha=0.8,size = 0.05)+
+  tm_layout(legend.outside = TRUE)+
+  tm_shape(iso) +  
+  tm_fill("minutes",
+          breaks = c(0, 5.01,  7.01,9.01,11.01), title="Isochrones (minutes)",
+          style = "fixed",labels =c("0 to 5", "5 to 7", "7 to 9","9 to 11"),
+          palette ="-BuPu",id="minutes",alpha = 0.3) +
+  tm_borders()
+```
+
+
+Comme nous l'avions précédemment constaté, il y a une concentration de caves à bière dans le centre de Rennes. Dans cette zone, de nombreuses caves sont situées à moins de 5 minutes à pied les unes des autres. Dans les quartiers périphériques, on observe une proportion moins élevée de caves à bière, bien que souvent deux caves se trouvent côte à côte. Pour les villes en périphérie, les isochrones occupent moins d'espace. Il y a moins de caves, mais cela s'explique également par le fait que les habitants ont tendance à utiliser davantage la voiture pour acheter des bières par rapport à ceux vivant en centre-ville.
+
+## 3.2 Analyse de la concurrence
+
+```{r}
+iso420<-iso%>%filter(time==420) #on selectionne seulement l'isocrhone à 7min
+#on compte (rowsums) le nombre de caves présent par IRIS(st_intersect)
+iris_rennes$nb_de_cave_par_iris<-rowSums(ifelse(st_intersects(x=iris_rennes,y=iso420,sparse=F),1,0)) 
+
+iris_rennes$nb_de_cave_par_iris<-as.factor(iris_rennes$nb_de_cave_par_iris)
+levels(iris_rennes$nb_de_cave_par_iris)[3:5]="[2-4]"
+levels(iris_rennes$nb_de_cave_par_iris)
+levels(iris_rennes$nb_de_cave_par_iris)[4:7]="[5-8]"
+levels(iris_rennes$nb_de_cave_par_iris)[5:6]="[9-13]"
+levels(iris_rennes$nb_de_cave_par_iris)[6:8]="[14-21]"
+
+# Créer la carte avec la couleur changeant en fonction du nombre de caves
+tm_shape(iris_rennes) +
+  tm_polygons("nb_de_cave_par_iris",
+              pal = rocket(6, direction = -1),
+              title = "Nombre de cave accessible en 7min") +
+  tm_text(text = "iris_name", size = 0.8)
+```
+
+
+
+Sur cette cave, nous observons la même tendance que précédemment, à savoir une concentration élevée de caves dans le centre, une quantité moindre dans les quartiers périphériques, et encore moins dans les villes en périphérie.
+
+
+
+Si l'on envisage de créer une cave à bière à Rennes, les données graphiques suggèrent que près de Beaulieu serait un choix optimal. En effet, aucune cave n'est présente dans cette zone, qui en plus abrite une population jeune, donc potentiellement consommatrice de ce type de boisson. De plus, en examinant la carte des isochrones, on constate qu'une personne habitant à Beaulieu n'a pas accès à une cave à bière en moins de 11 minutes, offrant ainsi un avantage temporel par rapport aux concurrents. Par ailleurs, il s'agit d'un endroit où la densité de population est élevée.
+
+Pour les villes en périphérie, le centre-ville de Saint-Jacques semble être le meilleur emplacement, pour des raisons similaires à celles de Beaulieu.
+
+
+
+# 4 Proximité géographique et autocorrélation spatiale
+
+## 4.1 Définir et obtenir la matrice de poids
+
+**Méthode Rook (adjacence)**
+
+
+```{r, warning=FALSE, message=FALSE}
+#On crée la liste des voisins à partir de la méthode "rook" 
+liste_voisins_rook<-poly2nb(iris_rennes, queen=FALSE)
+
+
+#Carte/graph des liens
+voisins_rook_sf <- spdep::nb2lines(liste_voisins_rook, coords = st_centroid(st_geometry(iris_rennes)))
+
+tmap_mode("plot") 
+
+rook <- tm_shape(iris_rennes)+tm_polygons(col="white", border.col = "grey25")+
+tm_graticules(lines = FALSE)+
+  tm_shape(st_centroid(iris_rennes))+tm_dots(size = .5,col="red")+
+  tm_shape(voisins_rook_sf)+tm_lines(col="black", lwd=0.3)+
+  tm_layout(title ="Voisins contigus (Queen)",title.position = c('left', 'bottom'),scale=0.5)
+```
+
+
+**Méthode basée sur la distance**
+
+
+```{r, warning=FALSE, message=FALSE}
+#On crée la liste des voisins à partir de la distance entre les IRIS
+liste_voisins_dist<-dnearneigh(st_coordinates(st_centroid(iris_rennes)),0,1.8,longlat = TRUE)
+
+#Carte/graph des liens
+voisins_dist_sf <-spdep::nb2lines(liste_voisins_dist, coords = st_centroid(st_geometry(iris_rennes)))
+
+distance <- tm_shape(iris_rennes)+tm_polygons(col="white", border.col = "grey25")+
+tm_graticules(lines = FALSE)+
+  tm_shape(st_centroid(iris_rennes))+tm_dots(size = .5,col="red")+
+  tm_shape(voisins_dist_sf)+tm_lines(col="black", lwd=0.3)+
+  tm_layout(title ="Voisins à moins de 1.2km",title.position = c('left', 'bottom'),scale=0.5)
+```
+
+**Méthode des plus proches voisins**
+
+```{r, warning=FALSE, message=FALSE}
+#On crée la liste des 3 plus proches voisins de chaque IRIS
+liste_voisins_proche <- knn2nb(knearneigh(st_coordinates(st_centroid(iris_rennes)),k=3))
+
+voisins_proche_sf <-spdep::nb2lines(liste_voisins_proche, coords = st_centroid(st_geometry(iris_rennes)))
+
+#Carte/graphs des liens
+
+ppv <- tm_shape(iris_rennes)+tm_polygons(col="white", border.col = "grey25")+
+tm_graticules(lines = FALSE)+
+  tm_shape(st_centroid(iris_rennes))+tm_dots(size = .5,col="red")+
+  tm_shape(voisins_proche_sf)+tm_lines(col="black", lwd=0.3)+
+  tm_layout(title ="3 plus proches Voisins",title.position = c('left', 'bottom'),scale=0.5)
+```
+
+```{r affichage_cartes_distance, warning=FALSE, message=FALSE}
+rook
+distance
+ppv
+```
+
+Sur les trois cartes ci-dessus nous pouvons voir que les quartiers du centre-ville sont plus densément peuplés que les quartiers périphériques. Cela se traduit par une plus grande concentration de liens entre les IRIS du centre-ville, et une plus grande dispersion des liens dans les quartiers périphériques.
+
+Enfin, on obtient les différentes matrices pondérées pour les trois méthodes de calcul des voisins.
+
+```{r affichage_matrice_pondérées, warning=FALSE, message=FALSE}
+#On transforme les listes de voisins en matrices de pondération normalisées (la somme des poids des voisins de chaque IRIS est égale à 1)
+W_rook<-nb2listw(liste_voisins_rook, style="W", zero.policy=TRUE)
+W_dist<-nb2listw(liste_voisins_dist, style="W", zero.policy=TRUE)
+W_proche<-nb2listw(liste_voisins_proche, style="W", zero.policy=TRUE)
+
+#As classical matrices
+M1<-listw2mat(W_rook)
+M2<-listw2mat(W_dist)
+M3<-listw2mat(W_proche)
+
+lattice::levelplot(t(M1))
+lattice::levelplot(t(M2))
+lattice::levelplot(t(M3))
+```
+
+Dans notre cas, ces matrices nous permettent de vérifier deux points ccruciaux. Premièrement, elles nous permetent de confirmer que la diagonale des matrices est vide, ce qui signifie que chaque quartier ne se compte pas lui-même parmi ses voisins directs. Deuxièmement, elles nous permetent de nous assurer que les matrices sont presque symétriques. Cela signifie que si le quartier "j" est considéré comme voisin du quartier "i", alors inversement, le quartier "i" est également un voisin du quartier "j". Bien que les poids associés à ces relations puissent varier en raison de la normalisation, cette symétrie est conservée.
+
+
+## 4.2 Indices de concentration spatial du nombre de point de vente accessible par IRIS
+
+**Indice de Moran pour l'ensemble des points de cave à bière (date de création indifférenciée):**
+
+```{r}
+nb_cave_iris <- read.csv("data/nb_cave_iris.txt")[,-1]
+iris_rennes$nb_de_cave_par_iris<-as.numeric(as.character(iris_rennes$nb_de_cave_par_iris))
+# Remplacer les NA par des 0 dans la colonne nb_de_cave_par_iris
+iris_rennes$nb_de_cave_par_iris[is.na(iris_rennes$nb_de_cave_par_iris)]<-0
+
+moran.test(iris_rennes$nb_de_cave_par_iris,W_dist,zero.policy =TRUE ) #pvalue <0.05 => autocorrélation spatiale
+moran.total<-moran.test(iris_rennes$nb_de_cave_par_iris,W_rook,zero.policy =TRUE )$estimate[1] #save the index
+moran.total
+
+```
+
+Nous avons une p-valeur inferieur à 5% ce qui indique qu'il y a de l'autocorrélation spatiale. On en déduit que les quartiers qui ont un nombre de caves à bière élevé ont tendance à être entourés de quartiers qui ont également un nombre de caves à bière élevé. De même, les quartiers qui ont un nombre de caves à bière faible ont tendance à être entourés de quartiers qui ont également un nombre de caves à bière faible.
+
+On en déduit que les caves à bière sont bien condensées à un endroit spécifique.
+
+**Indice de Moran différencié par cave **
+
+```{r}
+nb_cave_iris <- read.csv("data/nb_cave_iris.txt")[,-1]
+sapply(nb_cave_iris,function(x) moran.test(x,W_rook,zero.policy = TRUE))
+moran<-sapply(nb_cave_iris,function(x) moran.test(x,W_dist,zero.policy = TRUE)$estimate)[1,]
+              
+moran<-data.frame(t(c(moran,moran.total)))
+colnames(moran)[4]<-"TOTAL"
+moran
+```
+
+L'indice de Moran est positif et significatif, il y a donc une autocorrélation positive et significative entre les IRIS voisins. Cela indique qu'il existe une autocorrélation spatiale dans les erreurs de prédiction des modèles, ce qui implique que les valeurs similaires de nombre de caves à bière ont tendance à se regrouper dans l'espace.
+
+Nous allons choisir comme valeur de référence le *TOTAL*, qui est l'indice de Moran pour l'ensemble des points de vente. Pour le *recent*, on constate que son indice de Moran est plus élevé que le *TOTAL*, ce qui signifie que les caves à bière qui ont été implenté recemment se regroupent dans le même espace (à savoir le centre ville). Tandis que les caves à bière qui ont été implenté il y a longtemps sont bien plus dispersées dans l'espace, et effectivement c'est ce que nous avons pu observer sur les cartes au début.
+
+
+## 4.3 Indices de concentration spatial du taux de couverture par IRIS
+
+
+```{r}
+moran.test(iris_rennes$couverture,W_rook,zero.policy =TRUE )
+moran.test(iris_rennes$couverture,W_dist,zero.policy =TRUE )
+moran.test(iris_rennes$couverture,W_proche,zero.policy =TRUE )
+```
+
+
+
+  
+# 5 Conclusion
+
+Dans ce projet, nous avons étudié la répartition spatiale des caves à bière à Rennes. Nous avons pu constater que les caves à bière sont concentrées dans le centre-ville de Rennes, et que les quartiers périphériques en sont dépourvus. Nous avons également pu constater que les caves à bière récentes sont plus concentrées dans le centre-ville que les caves à bière plus anciennes. Enfin, nous avons pu constater que les caves à bière sont plus nombreuses dans les quartiers les plus densément peuplés.
+
+Pour l'implentation d'une nouvelle cave à bière, il y aurait deux solutions possibles :
+
+   - Implenter une cave à bière dans le centre ville de Rennes : effectivement, c'est ici que les cave à bière les plus récentes se sont implantées. Il y a donc déjà une forte concentration de cave à cet endroit masi cela pourrait nous être utile. En effet, on pourrait s'en servir comme "concurence positive" en essayant de se démarquer des autres caves à bière du centre ville (par exemple, bière exotiques, où bières très fortes, etc...)
+   
+   - Ton truc de beaulieu la
+   
+Pour conclure, il y a encore de la place à Rennes où dans ces alentours pour de nouvelles caves à bière. Il faudrait cependant bien choisir l'endroit où les implanter pour maximiser les chances de succès. Passionés par ce projet nous avons finalement décidé d'arrêter nos études pour ouvrir notre propre cave à bière à Rennes. Nous vous attendons nombreux pour venir déguster nos bières artisanales ! A très vitre !
+
+
+
