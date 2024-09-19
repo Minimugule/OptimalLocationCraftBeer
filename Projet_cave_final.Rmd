@@ -313,7 +313,7 @@ Sur cette carte, la réputation de la capitale bretonne est confirmée par une f
 ## 3.1 Obtenir des isochrones
 
 
-```{r}
+```{r mise en route}
  ## Mise en place du calculateur d’itinéraire
 
 # oublie pas d'installé java
@@ -330,7 +330,7 @@ otpcon <- otp_connect()
 
 
 
-```{r}
+```{r calcul iso}
 # Pourquoi pas mettre ,"CAR" dans les modes de stransports pour les villes en periphérie
 
 colnames(sirene_rennes)[2]<-"siret"
@@ -354,7 +354,7 @@ Nous partons du principe qu'une personne ne parcourra pas plus de 11 minutes à 
 
 
 
-```{r}
+```{r carte iso}
 tmap_mode("view")
 tm_shape(iris_rennes) +#tm_text(text = "iris_name",size=0.8)+
   tm_polygons("15_plus", alpha=0.5,palette="Greens",
@@ -376,7 +376,7 @@ Comme nous l'avions précédemment constaté, il y a une concentration de caves 
 
 ## 3.2 Analyse de la concurrence
 
-```{r}
+```{r re-calcule iso}
 iso420<-iso%>%filter(time==420) #on selectionne seulement l'isocrhone à 7min
 #on compte (rowsums) le nombre de caves présent par IRIS(st_intersect)
 iris_rennes$nb_de_cave_par_iris<-rowSums(ifelse(st_intersects(x=iris_rennes,y=iso420,sparse=F),1,0)) 
@@ -408,6 +408,69 @@ Pour les villes en périphérie, le centre-ville de Saint-Jacques semble être l
 
 
 
+
+
+```{r,echo=FALSE}
+#data_temp<-matrix(0,nrow=nrow(iris_rennes),ncol=nrow(iso420))
+#for(j in 1:nrow(iso420)){
+#  for (i in 1:nrow(iris_rennes)) {
+#    data_temp[i,j]<-as.character(st_intersects(iris_rennes, iso420,sparse=F)[i,j])
+#    data_temp[i,j]<-ifelse(data_temp[i,j]=="TRUE",iso420$Date.categ[j],0)
+#  }
+#} #cela nous donne les enseignes des supermarchés accessibles dans chaque IRIS, avec une colonne par supermarché dans nos données
+
+#data_temp2<-matrix(0,nrow=nrow(data_temp),ncol=length(unique(iso420$Date.categ)))
+#for(j in 1:length(unique(iso420$Date.categ))){
+#  data_temp2[,j]<-apply(data_temp, 1, function(x) length(which(x==unique(iso420$Date.categ)[j])))
+#} #regroupe le dataframe différent avec le nombre de supermarché de chaque enseigne par IRIS
+
+#data_temp2<-as.data.frame(data_temp2)
+#colnames(data_temp2)<-unique(iso420$Date.categ)
+#pensez bien à changer le repertoire ici
+#write.csv(data_temp2,"data/data_temp2")
+```
+
+
+```{r}
+#Surface cumulée couverte par un supermarché par IRIS
+#intersect_pct <- st_intersection(iris_rennes, iso420) %>% #calcul de l'intersection entre les iris et les iso
+#     mutate(intersect_area = st_area(.)) %>%   # création d'une variable de la surface en intersection
+#    dplyr::select(iris_name, intersect_area) %>%   # garder que les colonnes utiles
+#  group_by(iris_name)%>%mutate(intersect_area=sum(intersect_area))%>% #somme de la surface en intersection avec tous les supermarchés par iris
+#   st_drop_geometry()%>%unique() #On a pas besoin des informations géographiques
+
+#write.csv(intersect_pct,"data/intersect_pct")
+
+
+
+```
+
+
+```{r merge_iris}
+
+intersect_pct<-read.csv("data/intersect_pct")
+data_temp2<-read.csv("data/data_temp2")
+
+
+#Surface total des IRIS
+iris_rennes <- mutate(iris_rennes, iris_area = st_area(iris_rennes)) #obtenir la surface de chaque iris
+
+
+iris_rennes <- merge(iris_rennes, intersect_pct, by = "iris_name", all.x = TRUE) 
+
+
+if (!"intersect_area" %in% colnames(iris_rennes)) {
+  # Print a message indicating that the column doesn't exist
+  print("intersect_area column does not exist in iris_rennes dataframe.")
+} else {
+  # If the column exists, perform the mutation
+  iris_rennes <- iris_rennes %>%
+    mutate(intersect_area = ifelse(is.na(intersect_area), 0, intersect_area),
+           couverture = as.numeric(intersect_area / iris_area) * 100)
+}
+```
+
+
 # 4 Proximité géographique et autocorrélation spatiale
 
 ## 4.1 Définir et obtenir la matrice de poids
@@ -415,7 +478,7 @@ Pour les villes en périphérie, le centre-ville de Saint-Jacques semble être l
 **Méthode Rook (adjacence)**
 
 
-```{r, warning=FALSE, message=FALSE}
+```{r methode_rook, warning=FALSE, message=FALSE}
 #On crée la liste des voisins à partir de la méthode "rook" 
 liste_voisins_rook<-poly2nb(iris_rennes, queen=FALSE)
 
@@ -436,7 +499,7 @@ tm_graticules(lines = FALSE)+
 **Méthode basée sur la distance**
 
 
-```{r, warning=FALSE, message=FALSE}
+```{r calccul_voisin, warning=FALSE, message=FALSE}
 #On crée la liste des voisins à partir de la distance entre les IRIS
 liste_voisins_dist<-dnearneigh(st_coordinates(st_centroid(iris_rennes)),0,1.8,longlat = TRUE)
 
@@ -452,7 +515,7 @@ tm_graticules(lines = FALSE)+
 
 **Méthode des plus proches voisins**
 
-```{r, warning=FALSE, message=FALSE}
+```{r proche voisin, warning=FALSE, message=FALSE}
 #On crée la liste des 3 plus proches voisins de chaque IRIS
 liste_voisins_proche <- knn2nb(knearneigh(st_coordinates(st_centroid(iris_rennes)),k=3))
 
@@ -500,7 +563,7 @@ Dans notre cas, ces matrices nous permettent de vérifier deux points ccruciaux.
 
 **Indice de Moran pour l'ensemble des points de cave à bière (date de création indifférenciée):**
 
-```{r}
+```{r indice_momo}
 nb_cave_iris <- read.csv("data/nb_cave_iris.txt")[,-1]
 iris_rennes$nb_de_cave_par_iris<-as.numeric(as.character(iris_rennes$nb_de_cave_par_iris))
 # Remplacer les NA par des 0 dans la colonne nb_de_cave_par_iris
@@ -518,7 +581,7 @@ On en déduit que les caves à bière sont bien condensées à un endroit spéci
 
 **Indice de Moran différencié par cave **
 
-```{r}
+```{r momo_differenti}
 nb_cave_iris <- read.csv("data/nb_cave_iris.txt")[,-1]
 sapply(nb_cave_iris,function(x) moran.test(x,W_rook,zero.policy = TRUE))
 moran<-sapply(nb_cave_iris,function(x) moran.test(x,W_dist,zero.policy = TRUE)$estimate)[1,]
@@ -536,14 +599,14 @@ Nous allons choisir comme valeur de référence le *TOTAL*, qui est l'indice de 
 ## 4.3 Indices de concentration spatial du taux de couverture par IRIS
 
 
-```{r}
+```{r moran_test}
 moran.test(iris_rennes$couverture,W_rook,zero.policy =TRUE )
 moran.test(iris_rennes$couverture,W_dist,zero.policy =TRUE )
 moran.test(iris_rennes$couverture,W_proche,zero.policy =TRUE )
 ```
 
 
-
+L'analyse confirme une autocorrélation spatiale positive significative dans la variable "couverture". Cela signifie que les zones ayant des valeurs de "couverture" similaires sont regroupées géographiquement, quelle que soit la matrice de poids utilisée. Ce résultat suggère que des processus ou des facteurs spatiaux pourraient influencer la distribution des valeurs de "couverture" dans la zone d'étude.
   
 # 5 Conclusion
 
@@ -553,9 +616,10 @@ Pour l'implentation d'une nouvelle cave à bière, il y aurait deux solutions po
 
    - Implenter une cave à bière dans le centre ville de Rennes : effectivement, c'est ici que les cave à bière les plus récentes se sont implantées. Il y a donc déjà une forte concentration de cave à cet endroit masi cela pourrait nous être utile. En effet, on pourrait s'en servir comme "concurence positive" en essayant de se démarquer des autres caves à bière du centre ville (par exemple, bière exotiques, où bières très fortes, etc...)
    
-   - Ton truc de beaulieu la
+   - Implenter une cave à bière à Beaulieu: Cette zone ne dispose actuellement d'aucune cave, malgré la présence d'une population jeune, qui est souvent friande de bière. L'avantage réside dans le fait qu'il n'y a pas de cave facilement accessible, ce qui signifie peu de concurrence. Cela offre un avantage par rapport aux caves du centre-ville, qui sont plus difficiles d'accès.
    
 Pour conclure, il y a encore de la place à Rennes où dans ces alentours pour de nouvelles caves à bière. Il faudrait cependant bien choisir l'endroit où les implanter pour maximiser les chances de succès. Passionés par ce projet nous avons finalement décidé d'arrêter nos études pour ouvrir notre propre cave à bière à Rennes. Nous vous attendons nombreux pour venir déguster nos bières artisanales ! A très vitre !
+
 
 
 
